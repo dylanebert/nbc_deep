@@ -53,8 +53,8 @@ h3 {
 	text-align: center;
 	margin-top: 30px;
 }
-#eventImage {
-	max-width: 85%;
+.figure-img {
+	max-width: 100%;
 }
 .page-footer {
 	padding: 50px;
@@ -64,7 +64,7 @@ h3 {
 <body>
 <div class="container">
 	<div class="head">
-		<h1>NBC Dataset Analysis 2: Electric Boogaloo</h1>
+		<h1>NBC Dataset Analysis 2</h1>
 	</div>
 	<div class="panel-group">
 		<p>Progress on using the NBC (New Brown Corpus) dataset.</p>
@@ -79,8 +79,190 @@ h3 {
 					<li>Frame-based models</li>
 					<li>Trajectory-based models</li>
 					<li>Discussion</li>
-					<li>Future Steps</li>
 				</ol>
+				<p>Note that the work summarized here is not a well-controlled experiment comparing plausible models, but rather a greedy search
+					for any methods that show any promise at all.</p>
+			</div>
+		</div>
+		<div class="panel panel-default">
+			<div class="panel-heading"><h2>Input parameters</h2></div>
+			<div class="panel-body">
+				<p><b>Absolute position:</b> Position (x, y, z) relative to world coordinates (0, 0, 0). Absolute position is intended to capture
+					spatial relationships between objects, ie. the fridge being next to the counter. It would be more straightforward to extract
+					this from absolute position than relative position, since relative position is constantly changing. However, since our first
+					priority is representing simple, single-object actions, absolute position becomes omitted in many inputs.</p>
+				<p><b>Relative position:</b> Position (x, y, z) relative to perspective of the head. Computed with <code>r.apply(object_pos - head_pos, inverse=True)</code>,
+					using sklearn spatial rotation. Early on and prior to these steps, we were using only <code>object_pos - head_pos</code>, without rotation applied.
+					This was fixed and results in this document use inverse-rotated relative position.</p>
+				<p><b>Velocity:</b> Velocity (x, y, z) is delta position per second. We go through many iterations of velocity, be it absolute:
+					<code>object_vel</code>, relative unrotated: <code>(object_vel - head_vel)</code>, rotated: <code>r.apply(object_vel, inverse=True)</code>, where
+					<code>r</code> is head rotation, and relative rotated: <code>r.apply(object_vel - head_vel, inverse=True)</code>. In retrospect, the most
+					intuitive of these is likely rotated: <code>r.apply(object_vel, inverse=True)</code>.</p>
+				<a class="btn btn-primary" data-toggle="collapse" href="#inputImplicit" role="button" aria-expanded="false" aria-controls="inputImplicit">
+					Implicit parameters <span class="glyphicon glyphicon-menu-down"></span></a>
+				<a class="btn btn-primary" data-toggle="collapse" href="#inputMore" role="button" aria-expanded="false" aria-controls="inputMore">
+					Omitted parameters <span class="glyphicon glyphicon-menu-down"></span></a>
+				<div class="collapse" id="inputImplicit">
+					<div class="card card-body">
+						<h3>Implicit parameters</h3>
+						<p>These are parameters that can be inferred from other parameters, but are sometimes included to try to help the model.</p>
+						<ul>
+							<li><b>Centrality:</b> Represents closeness to center of view, from 0 to 1. Computed as <code>1 / (np.linalg.norm(relPos.x, relPos.y) + 1)</code>.</li>
+							<li><b>Focal distance:</b> Represents nearness to viewer, from 0 to 1. Computed as <code>1 / (relPos.z + 1)</code>.</li>
+							<li><b>Hand nearness:</b> Represents nearness of object to hand, from 0 to 1. Computed as <code>1 / (np.linalg.norm(handPos - objPos) + 1)</code>, for each hand.</li>
+						</ul>
+					</div>
+				</div>
+				<div class="collapse" id="inputMore">
+					<div class="card card-body">
+						<h3>Omitted parameters</h3>
+						<p>These parameters are recorded, but not used for the methods in this writeup.</p>
+						<ul>
+							<li><b>Rotation:</b> Rotation is represented as quaternion (x, y, z, w), relative to identity quaternion (0, 0, 0, 1). This is intended to capture
+								rotation-dependent actions, such as rolling something. To simplify these early attempts toward representing spatial data, rotation is excluded
+								in all methods below.</li>
+							<li><b>Bounds:</b> Radial distance (x, y, z) from center of the object to its bounds in each direction. This is omitted in models below for simplicity.</li>
+						</ul>
+					</div>
+				</div>
+				<p style="margin-top: 20px"><b>It may also be worth considering other parameters,</b> such as Y-rotated position. That is, where x and z values are rotated relative to the head, while y remains absolute.
+					This is how humans usually speak, in terms of left, right, up and down. Humans actually have no words that describe up and down relative to head rotation, like they
+					do for left/right as relative equivalents to north/south/east/west. Probably because of gravity.</p>
+			</div>
+		</div>
+		<div class="panel panel-default">
+			<div class="panel-heading"><h2>Frame-based models</h2></div>
+			<div class="panel-body">
+				<p>These models attempt to first encode <b>frames</b> - spatial data of all objects at a point in time - then combine these frame encodings to form an <b>event</b>.</p>
+				<p>Most of our work until the latest steps have followed this approach, including in the naive SVD-based approach used for analysis in the previous writeup.</p>
+				<div class="text-center">
+					<figure class="figure">
+						<img src="images/frame_based.png" id="frame-based" class="figure-img">
+					</figure>
+				</div>
+				<p>All frame-based models follow the framework depicted above, where a <b>frame encoder</b> encodes an <i>m</i> x <i>n</i> matrix of object data, where <i>n</i> is a
+					fixed-length spatial parameter size, and <i>m</i> is a variable-length number of objects. The encoder produces a <i>d</i>-dimensional vector representing the frame.</p>
+				<p>The <b>event encoder</b> encodes a matrix of <i>k</i> frame vectors, producing a vector representing the event. Event size <i>k</i> can be fixed or dynamic, depending
+					on the model and whether variable-length events are needed.</p>
+				<h3>Frame encoders</h3>
+				<table class="table table-striped">
+					<thead>
+						<tr>
+							<th scope="col">Method</th>
+							<th scope="col">Description</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<th scope="col">Transformer</th>
+							<td>Input: Padded <i>k</i>=32 dimensional frame input.
+								Object spatial parameters are concatenated with embeddings that identify the object.
+								The vector at index 0 of the output matrix is taken as output.
+								The transformer does not add position embeddings, since the sequence is unordered.
+								Since it's trained end-to-end with the event encoder, no frame-specific training objective is needed (though it
+								may help).</td>
+						</tr>
+					</tbody>
+				</table>
+				<h3>Event encoders</h3>
+				<table class="table table-striped">
+					<thead>
+						<tr>
+							<th scope="col">Method</th>
+							<th scope="col">Description</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<th scope="col">RNN</th>
+							<td>Input: <i>k</i>=[15, 30] sequential frame encodings, corresponding to 5-10 seconds of data at 3 FPS.
+								An LSTM is used with hidden size 128. A twin towers training objective is used, where two identical
+								networks encode Event A and B, and a final binary softmax layer determines their correspondence.</td>
+						</tr>
+						<tr>
+							<th scope="col">Transformer</th>
+							<td>Same input as before, but to length 64. Position embeddings are added, since the sequence is ordered.
+								As in the frame encoder transformer, the vector at index 0 of the output matrix is taken as output.
+								Two different training objectives are used: twin towers, and bert-style, described below.</td>
+						</tr>
+					</tbody>
+				</table>
+				<h3>Inputs</h3>
+				<p>Relative position and velocity are always used. Models are tested with and without absolute position, centrality, focal distance, and hand nearness.</p>
+				<h3>Training objective</h3>
+				<p>The training objective we used was determining whether event <b>B</b> comes 0 to 5 seconds after event <b>A</b>. Initially,
+					for invalid samples, we took a random event <b>B</b> at least 15 seconds separated from event <b>A</b>, or from another
+					session. In the case of the other session being a different kitchen, this was too easy. We didn't test performance using
+					only invalid events from the same kitchen. Instead, we opted to obtain invalid pairs by simply swapping <b>A</b> and <b>B</b>.</p>
+				<p>The twin network outputs were initially combined by concatenating them, then adding a binary softmax layer on top. This didn't work.
+					In retrospect, this is because at least one intermediate layer needed to be added before the softmax
+					layer to preserve codependent ordering information. For the time being, though, we switched to an abs(A-B) combination. This worked
+					for the initial objective, but not the pair swapping objective. Encodings obtained with the abs(A-B) twin tower objective with
+					randomly sampled invalid event <b>B</b> performed at random on the nearest-neighbors task using the RNN event encoder, and a bit
+					better than randomly for nouns only using the transformer event encoder.</p>
+				<p>For the transformer, a bert-style objective was also used, where two events are encoded with the same encoder using input
+					like <code>[CLS] A A A A A [SEP] B B B B B [SEP] [PAD] [PAD] [PAD] ... [PAD]</code>. This was able to achieve up to ~70% accuracy
+					on the swapped <b>A</b>, <b>B</b> invalid event pair sampling. We didn't test nearest-neighbor encodings, since this approach doesn't
+					directly produce single-event encodings. This may be possible by doing something like element-wise averaging across each event.</p>
+			</div>
+		</div>
+		<div class="panel panel-default">
+			<div class="panel-heading"><h2>Trajectory-based models</h2></div>
+			<div class="panel-body">
+				<p>Trajectory-based models encode object motion individually.</p>
+				<div class="text-center">
+					<figure class="figure">
+						<img src="images/traj_based.png" id="frame-based" class="figure-img">
+					</figure>
+				</div>
+				<p>The trajectory-based approach is based on prior research in activity recognition such as <a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6263516/">Iss2Image</a>,
+					which represents spatiotemporal data as an image, which is then encoded with a CNN.<p>
+				<h3>Trajectory encoders</h3>
+				<table class="table table-striped">
+					<thead>
+						<tr>
+							<th scope="col">Method</th>
+							<th scope="col">Description</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<th scope="col">Convolutional VAE v1</th>
+							<td>Full event-length 10 x [320, 640] inputs are converted to RGB images as in <a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6263516/">Iss2Image</a>.
+								These are resized to 10 x 128 using nearest-neighbor image resizing. A two-layer convolutional encoder is used, with kernel size 3 and strides of 2. Only
+								spatial data is used, without object label embeddings. Latent size is 64.</td>
+						</tr>
+						<tr>
+							<th scope="col">Convolutional VAE v2</th>
+							<td>Fixed length 12 x 64 inputs are converted to grayscale images, corresponding to the red values as in v1. A two-layer convolutional encoder is used,
+								with kernel size 3 and strides of (2, 3) and (2, 1). Since trajectories are fixed to size 64, and events are much longer, we must combine multiple
+								trajectory encodings to represent objects across an event. For now, we simply average the vectors element-wise.</td>
+						</tr>
+					</tbody>
+				</table>
+				<h3>Inputs</h3>
+				<p>For v1, input parameters are relative position, velocity, centrality, focal distance, and hand nearness. For v2, input parameters are relative position, velocity,
+					left hand relative position, and right hand relative position. The second approach is tailored to a stride of 3 in the first convolution layer, which will have filters
+					applied to (xyz) chunks in the first convolution layer.</p>
+				<h3>Training objective</h3>
+				<p>Unlike in the previous section, we have no event encoder. This would need to be an encoder that combines multiple object trajectories. For now, we test only a very naive approach:
+					only consider events that have one moving object, and treat that object's trajectory encoding as the event representation. 17/20 of our nearest-neighbor query events have one
+					and only one object moving.</p>
+				<p>We concatenate these with the corresponding object embeddings, and evaluate on nearest neighbors. We get better results, with nearly perfect object matching and ~2/3 verb matching.
+					However, it isn't clear the extent to which trajectory is capturing similar actions, or whether the same object moving just happens to often be the same action.</p>
+			</div>
+		</div>
+		<div class="panel panel-default">
+			<div class="panel-heading"><h2>Discussion</h2></div>
+			<div class="panel-body">
+				<p>These intermediate results are mixed. Only the trajectory-based model achieved positive nearest-neighbor results, but based on two caveats:</p>
+				<ol>
+					<li>It isn't clear the extent to which the trajectory encoding is meaningful, or just that the same object moving often points to similar actions.</li>
+					<li>The frame-based models have a lot of problems, known and likely unknown. The twin towers approach may be able to handle swapped events, by concatenating
+						outputs and addding more intermediate layers before the prediction. It's also not obvious what the right training object is.</li>
+				</ol>
+				<p>If it is the case that simply an object moving happens to often produce good results, then a model should be able to attend to moving objects in an unsupervised
+					way. This should especially be easy, since velocity is provided. <b>What is the right training objective to capture this?</b></p>
 			</div>
 		</div>
 	</div>
